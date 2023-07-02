@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stdio.h>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -7,6 +8,7 @@
 using std::vector;
 using std::unordered_map;
 using byte = unsigned char;
+using word = unsigned short;
 
 struct HuffmanTableData {
     bool dcTable;
@@ -45,7 +47,6 @@ class HuffmanDecoder {
             len++;
         }
 
-        std::cout << "built table " << data.tableIndex << std::endl;
     }
 
     bool lookup(byte tableIndex, bool dc, int code, byte& out) {
@@ -82,20 +83,8 @@ class HuffmanDecoder {
 
 
 enum marker {
-    SOF0,
-    SOF1,
-    SOF2,
-    SOF3,
-    SOF5,
-    SOF6,
-    SOF7,
+    SOF,
     JPG,
-    SOF9,
-    SOF10,
-    SOF11,
-    SOF13,
-    SOF14,
-    SOF15,
     DHT,
     DAC,
     RST,
@@ -162,22 +151,22 @@ public:
                 case 0x00:
                     // just padding
                     break;
-                case 0xC0: return SOF0;
-                case 0xC1: return SOF1;
-                case 0xC2: return SOF2;
-                case 0xC3: return SOF3;
+                case 0xC0: return SOF;
+                case 0xC1: return SOF;
+                case 0xC2: return SOF;
+                case 0xC3: return SOF;
                 case 0xC4: return DHT;
-                case 0xC5: return SOF5;
-                case 0xC6: return SOF6;
-                case 0xC7: return SOF7;
+                case 0xC5: return SOF;
+                case 0xC6: return SOF;
+                case 0xC7: return SOF;
                 case 0xC8: return JPG;
-                case 0xC9: return SOF9;
-                case 0xCA: return SOF10;
-                case 0xCB: return SOF11;
+                case 0xC9: return SOF;
+                case 0xCA: return SOF;
+                case 0xCB: return SOF;
                 case 0xCC: return DAC;
-                case 0xCD: return SOF13;
-                case 0xCE: return SOF14;
-                case 0xCF: return SOF15;
+                case 0xCD: return SOF;
+                case 0xCE: return SOF;
+                case 0xCF: return SOF;
                 case 0xD0: return RST;
                 case 0xD2: return RST;
                 case 0xD3: return RST;
@@ -271,10 +260,10 @@ public:
         return buf;
     }
 
-    short getUShort() {
+    word getWord() {
         byte* buf[2];
         getBytesMatchEndian((byte*) buf, 2);
-        return *((unsigned short*)buf);
+        return *((word*)buf);
     }
 
     void skipBytes(int numBytes) {
@@ -285,28 +274,133 @@ public:
 
 class JPEGDecoder {
 
+    int quantTables[4][8][8];
 
-    void mkrAPP0(ByteStream& bs) {
+    struct FrameComponentData {
+        byte Ci;
+        byte H;
+        byte V;
+        byte Tq;
+    };
 
-        unsigned short len = bs.getUShort();
-        len -= 2; //exclude the length itself
-        std::cout << "APP0 length: " << len << std::endl; 
+    struct FrameHeader {
+        byte P;
+        word Y;
+        word X;
+        byte Nf; 
+        FrameComponentData components[4];
+    };
 
-        // if we need APP0 stuff, I'll get it here. for now, skip
-        bs.skipBytes(len);
+    struct ScanComponentData {
+        byte Cs;
+        byte Td;
+        byte Ta;
+    };
+
+    struct ScanHeader {
+        byte Ns;
+        ScanComponentData components[4];
+        byte Ss;
+        byte Se;
+        byte Ah;
+        byte Al;
+    };
+
+
+    FrameHeader baselineFrame(ByteStream& bs) {
+        std::cout << "baseline Frame\n";
+        word len = bs.getWord();
+        
+        FrameHeader header;
+        header.P = bs.getByte();
+        header.Y = bs.getWord();
+        header.X = bs.getWord();
+        header.Nf = bs.getByte();
+
+        printf("P: %d Y: %d X: %d Nf: %d\n", header.P, header.Y, header.X, header.Nf);
+
+        for(int i=0; i < header.Nf; i++) {
+            auto com = &(header.components[i]);
+            com->Ci = bs.getByte();
+            
+            byte sampling = bs.getByte();
+            com->H = sampling >> 4; 
+            com->V = sampling & 0x0F;
+
+            com->Tq = bs.getByte();
+            
+            printf("component %d H: %d V: %d Tq: %d\n", com->Ci, com->H, com->V, com->Tq);
+        }
+
+        return header;
     }
 
-    void buildQuantTables() {
-        std::cout << "quant tables time\n";
-        return;
+    void buildQuantTables(ByteStream& bs) {
+        word len = bs.getWord();
+
+        byte b = bs.getByte();
+        byte Pq = b >> 4;
+        byte Tq = b & 0x0F;
+
+        if(Pq != 0) {
+            printf("Precision of 16 bits is not supported! QT\n");
+            return;
+        }
+
+        printf("buliding quant table %d\n", Tq);
+
+        int (*table)[8] = quantTables[Tq];
+
+        int i = 0;
+        int j = 0;
+        bool secondHalf = false;
+        bool rowPos = false;
+
+        while(i < 8 && j < 8) {
+            if(!secondHalf && (i == 7 || j == 7)) secondHalf = true;
+
+            while(i >= 0 && i < 8 && j >= 0 && j < 8) {
+                table[i][j] = (int) bs.getByte(); 
+                
+                if(rowPos) {
+                    i++; j--;
+                }
+                else {
+                    i--; j++;
+                }
+            }
+
+            if(rowPos && secondHalf) {
+                i--; j += 2;
+            }
+            else if(rowPos) {
+                j++;
+            }
+            else if(secondHalf) {
+                i += 2; j--;
+            }
+            else {
+                i++;
+            }
+
+            rowPos = !rowPos;
+        }
+
+    }
+
+    void defineRestartInterval(ByteStream& bs) {
+        printf("restart interval setting!!\n");
+
+        word len = bs.getWord();
+        word restartInterval = bs.getWord();
+        printf("interval is %d", restartInterval);
     }
 
 
     void buildHuffmanTables(ByteStream& bs, HuffmanDecoder& huff) {
-        std::cout << "huff tables time\n";
 
         HuffmanTableData header;
-        unsigned short len = bs.getUShort();
+        word len = bs.getWord();
 
         byte b = bs.getByte();
         header.dcTable = (b >> 4) == 0;
@@ -323,27 +417,38 @@ class JPEGDecoder {
             header.vals.push_back(bs.getByte());
         }
         
-
-        std::cout << "huffman table length: " << std::dec << len << std::endl;
-        std::cout << "hft table " << header.tableIndex << std::endl;
-        std::cout << "hft is DC Table: " << header.dcTable << std::endl;
-        std::cout << "hft has " << header.vals.size() << " codes" << std::endl;
+        printf("hft table %d ", header.tableIndex);
+        if(header.dcTable) printf("DC\n");
+        else printf("AC\n");
 
         huff.buildTable(header);
 
     }
 
-    void setRestartInterval() {
-        std::cout << "setting restart interval\n";
 
-    }
+    void startScan(ByteStream& bs) {
+        printf("start of scan\n");
+        word len = bs.getWord();
 
-    void startOfFrame() {
-        std::cout << "start of frame\n";
-    }
+        ScanHeader header; 
+        header.Ns = bs.getByte();
+        printf("scan components: %d\n", header.Ns);
 
-    void startScan() {
-        std::cout << "start of scan\n";
+        for(int i=0; i < header.Ns; i++) {
+            auto com = &(header.components[i]);
+            com->Cs = bs.getByte();
+            byte b = bs.getByte();
+            com->Td = b >> 4;
+            com->Ta = b & 0x0F;
+
+            printf("component %d TDC %d TAC %d\n", com->Cs, com->Td, com->Ta);
+        }
+
+        header.Ss = bs.getByte();
+        header.Se = bs.getByte();
+        byte b = bs.getByte();
+        header.Ah = b >> 4;
+        header.Al = b & 0x0F;
     }
 
     public:
@@ -355,47 +460,83 @@ class JPEGDecoder {
         marker markerBuf;
         markerBuf = bs.nextMarker();
 
-        if(markerBuf != SOI) return;
-        std::cout << "SOI found!\n";
+        if(markerBuf != SOI) {
+            printf("SOI not found\n");
+        }
 
+        // go until start of frame is found
+        markerBuf = bs.nextMarker();
+        while(markerBuf != SOF && markerBuf != EOI) {
 
-        while((markerBuf = bs.nextMarker()) != EOI) {
-            std::cout << std::hex << (int)(bs.lastReadByte()) << std::endl;
+            // need to handle optional xFF fill bytes
+
             switch(markerBuf) {
                 case APP:
-                    std::cout << "APP found\n";
+                    printf("APP found!\n");
                     break;
+
+                case COM:
+                    printf("comment found, not supported yet\n");
+                    break;
+
+                case DRI:
+                    defineRestartInterval(bs);
+                    break;
+
                 case DQT:
-                    buildQuantTables();
+                    buildQuantTables(bs);
                     break;
 
                 case DHT:
                     buildHuffmanTables(bs, huff);
                     break;
 
-                case DRI:
-                    setRestartInterval();
-                    break; 
-
-                case SOF0:
-                    startOfFrame();
-                    break;
-                
-                case SOS:
-                   startScan();
-                   break;
-
                 case MARKER_ERROR:
-                    std::cout << "Something went very bad. Oh god.\n";
+                    printf("Something went very bad. Oh god.\n");
                     return;
 
                 default:
-                    std::cout << "Some other random marker?\n";
+                    printf("unsupported marker ");
+                    std::cout << std::hex << (int)(bs.lastReadByte()) << std::dec << std::endl;
                     break;
 
             }
+
+            markerBuf = bs.nextMarker();
         }
-        std::cout << "reached end of image!\n";
+
+        byte sofType = bs.lastReadByte() - 0xC0;
+        if(sofType != 0) {
+            printf("SOF%d is not supported yet!\n", sofType);
+            return;
+        }
+
+        FrameHeader fh = baselineFrame(bs);
+
+        // inside frame
+        markerBuf = bs.nextMarker();
+        while(markerBuf != EOI) {
+            switch(markerBuf) {
+                case DQT:
+                    buildQuantTables(bs);
+                    break;
+
+                case DHT:
+                    buildHuffmanTables(bs, huff);
+                    break;
+
+                case SOS:
+                    startScan(bs);
+                    break;
+
+                default:
+                    printf("unsupported marker in frame\n");
+            }
+
+            markerBuf = bs.nextMarker();
+        }
+
+        printf("reached end of image!\n");
         
     }
 
@@ -405,7 +546,7 @@ class JPEGDecoder {
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cout << "Usage: " << argv[0] << " filename\n";
+        printf("Usage: %s filename\n", argv[0]);
         return 0;
     }
     auto decoder = JPEGDecoder();
