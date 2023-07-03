@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cmath>
 #include <stdio.h>
 #include <fstream>
 #include <vector>
@@ -17,26 +18,49 @@ struct HuffmanTableData {
     vector<byte> vals; 
 };
 
+struct HuffmanTable {
+    unordered_map<int, byte> table;
+    int numCodes[16];
+};
+
 class HuffmanDecoder {
     
-    unordered_map<int, byte> tablesDC[4];
-    unordered_map<int, byte> tablesAC[4];
+    HuffmanTable* tablesDC[4];
+    HuffmanTable* tablesAC[4];
+    
 
     public: 
-    void buildTable(HuffmanTableData data) {
+    HuffmanDecoder() {
+        for(int i=0; i < 4; i++) {
+            tablesDC[i] = new HuffmanTable();
+            tablesAC[i] = new HuffmanTable();
+        }
+    }
 
-        unordered_map<int, byte> table = data.dcTable ? tablesDC[data.tableIndex] : tablesAC[data.tableIndex];
-        table.clear();
+    ~HuffmanDecoder() {
+        for(int i=0; i < 4; i++) {
+            delete tablesDC[i];
+            delete tablesAC[i];
+        }
+    }
+
+    void buildTable(HuffmanTableData data) {
+        printf("HUFFTABLE BUILD START\n");
+
+        HuffmanTable* ht = data.dcTable ? tablesDC[data.tableIndex] : tablesAC[data.tableIndex];
+        
+        ht->table.clear();
+
+        for(int i=0; i < 16; i++) ht->numCodes[i] = data.bits[i];
         
         int valIndex = 0;
         int len = 1;
         int code = 0;
 
         while(len <= 16) {
-            int numCodes = 1;
-
-            while(numCodes <= data.bits[len-1]) {
-                table[code] = data.vals[valIndex];
+            int numCodes = 0;
+            while(numCodes < data.bits[len-1]) {
+                ht->table[code] = data.vals[valIndex];
 
                 valIndex++;
                 numCodes++;
@@ -49,34 +73,17 @@ class HuffmanDecoder {
 
     }
 
-    bool lookup(byte tableIndex, bool dc, int code, byte& out) {
-        auto table = dc ? tablesDC[tableIndex] : tablesAC[tableIndex];
-        auto x = table.find(code);
-        if(x == table.end()) return false;
-        out = x->second;
-        return true;
-    }
+    bool lookup(byte tableIndex, bool dc, int code, int len, byte* out) {
+        HuffmanTable* ht = dc ? tablesDC[tableIndex] : tablesAC[tableIndex];
 
-    vector<byte> decode(byte tableIndex, bool dc, vector<byte> data) {
-        vector<byte> output = vector<byte>();
-
-        byte databuf = 0;
-        int bitbuf = 0;
-        int i = 0;
-        while(i++ < data.size()) {
-            int bit = 0;
-            byte d = data[i];
-
-            while(bit++ < 8) {
-                bitbuf |= (d & 1) << bit;
-                if(lookup(tableIndex, dc, bitbuf, databuf)) {
-                    output.push_back(bitbuf);
-                    bitbuf = 0;
-                }
-            }
+        if(ht->numCodes[len-1] < 1) {
+            return false;
         }
 
-        return output;
+        auto x = ht->table.find(code);
+        if(x == ht->table.end()) return false;
+        *out = x->second;
+        return true;
     }
 
 };
@@ -113,6 +120,9 @@ class ByteStream {
 
     byte prefix;
     byte lastRead;
+    byte bitsLeft;
+    byte bitBuffer;
+
     std::ifstream file;
     endian hostEndian, fileEndian;
 
@@ -130,6 +140,37 @@ public:
         prefix = markerPrefix;
         hostEndian = endianCheck();
         fileEndian = bigEndian ? EN_BIG : EN_LITTLE;
+        bitsLeft = 0;
+        bitBuffer = 0;
+    }
+
+    int getBits(int n) {
+        int b = 0;
+        for(int i=0; i < n; i++) {
+            if(bitsLeft == 0) {
+                if(lastRead == 0xFF) {
+                    file.read((char*) &bitBuffer, 1);
+
+                    if(bitBuffer == 0) printf("found stuffing\n");
+                    else printf("found marker in getBits()\n");
+                }
+
+                file.read((char*) &bitBuffer, 1);
+                lastRead = bitBuffer;
+                bitsLeft = 8;
+            }
+             
+            b = b << 1;
+            b |= (bitBuffer & (1 << (bitsLeft - 1)) == 1); 
+            bitsLeft--;
+        }
+
+        return b;
+    }
+
+    void clearBitBuffer() {
+        bitBuffer = 0;
+        bitsLeft = 0;
     }
 
     void setPrefix(byte pre) {
@@ -275,6 +316,7 @@ public:
 class JPEGDecoder {
 
     int quantTables[4][8][8];
+    int dcPred;
 
     struct FrameComponentData {
         byte Ci;
@@ -414,7 +456,8 @@ class JPEGDecoder {
         }
 
         while(totalCodes-- > 0) {
-            header.vals.push_back(bs.getByte());
+            byte b = bs.getByte();
+            header.vals.push_back(b);
         }
         
         printf("hft table %d ", header.tableIndex);
@@ -426,7 +469,7 @@ class JPEGDecoder {
     }
 
 
-    void startScan(ByteStream& bs) {
+    void startScan(ByteStream& bs, HuffmanDecoder& huff) {
         printf("start of scan\n");
         word len = bs.getWord();
 
@@ -449,6 +492,98 @@ class JPEGDecoder {
         byte b = bs.getByte();
         header.Ah = b >> 4;
         header.Al = b & 0x0F;
+
+
+        decodeDataUnit(bs, huff, header.components[0].Td);
+    }
+
+    byte decodeNext(ByteStream& bs, HuffmanDecoder& huff, int table, bool dc) {
+        int code = 0;
+        int bits = 0;
+        byte value = 0;
+        while(bits < 16) {
+            code = code << 1;
+            code |= bs.getBits(1);
+            if(huff.lookup(table, dc, code, bits + 1, &value)) {
+                return value;
+            }
+
+            bits++;
+        }
+
+        printf("Failed to decode val\n");
+        return 0;
+    }
+
+    int getAppendedValue(ByteStream& bs, int bitsNeeded) {
+
+        int val = bs.getBits(bitsNeeded);
+        if((val & (1 << (bitsNeeded - 1))) == 0) {
+            // negative num
+            int offset = pow(2, bitsNeeded) - 1;
+            val -= offset;
+        }
+        return val;
+    }
+
+    int decodeDC(ByteStream& bs, HuffmanDecoder& huff, int table) {
+        byte bitsNeeded = decodeNext(bs, huff, table, true);
+        int diff = getAppendedValue(bs, bitsNeeded);
+        int output = dcPred + diff;
+
+        dcPred = output;
+        return output;
+    }
+
+    vector<int> decodeAC(ByteStream& bs, HuffmanDecoder& huff, int table) {
+        int c=1;
+
+        vector<int> output;
+        bool endOfBlock = false;
+
+        while(c < 64) {
+            if(endOfBlock) {
+                output.push_back(0);
+                c++;
+                continue;
+            }
+
+            byte run = decodeNext(bs, huff, table, false);
+
+            if(run == 0) {
+                printf("ENDOFBLOCK\n");
+                endOfBlock = true;
+                continue;
+            }
+
+            byte numZeros = run >> 4;
+            byte bitsNeeded = run & 0x0F;
+
+            
+            for(byte i=0; i < numZeros; i++) {
+                output.push_back(0);
+                c++;
+            }
+
+            int val = getAppendedValue(bs, bitsNeeded);
+            output.push_back(val); 
+            c++;
+        }
+
+        return output;
+    }
+
+    vector<int> decodeDataUnit(ByteStream& bs, HuffmanDecoder& huff, int huffTable) {
+        int dc = decodeDC(bs, huff, huffTable);
+        vector<int> ac = decodeAC(bs, huff, huffTable);
+        printf("printing data unit\n");
+        printf("%d ", dc);
+        for(int i=0; i < 63; i++) {
+            printf("%d ", ac[i]);
+        }
+        printf("\n");
+
+        return ac;
     }
 
     public:
@@ -456,6 +591,7 @@ class JPEGDecoder {
 
         ByteStream bs = ByteStream(filename, 0xFF, true);
         HuffmanDecoder huff = HuffmanDecoder();
+        dcPred = 0;
 
         marker markerBuf;
         markerBuf = bs.nextMarker();
@@ -526,7 +662,7 @@ class JPEGDecoder {
                     break;
 
                 case SOS:
-                    startScan(bs);
+                    startScan(bs, huff);
                     break;
 
                 default:
