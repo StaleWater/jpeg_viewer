@@ -20,6 +20,8 @@ struct HuffmanTableData {
 
 struct HuffmanTable {
     unordered_map<int, byte> table;
+    vector<int> codes;
+    int lenMinIndex[16];
     int numCodes[16];
 };
 
@@ -59,8 +61,12 @@ class HuffmanDecoder {
 
         while(len <= 16) {
             int numCodes = 0;
+            ht->lenMinIndex[len-1] = ht->codes.size();
             while(numCodes < data.bits[len-1]) {
                 ht->table[code] = data.vals[valIndex];
+                ht->codes.push_back(code); 
+
+                printf("code %x of length %d has val %d\n", code, len, ht->table[code]);
 
                 valIndex++;
                 numCodes++;
@@ -71,19 +77,27 @@ class HuffmanDecoder {
             len++;
         }
 
+
     }
 
     bool lookup(byte tableIndex, bool dc, int code, int len, byte* out) {
         HuffmanTable* ht = dc ? tablesDC[tableIndex] : tablesAC[tableIndex];
-
-        if(ht->numCodes[len-1] < 1) {
+        int n = ht->numCodes[len-1]; 
+        if(n < 1) {
             return false;
         }
+        
+        int start = ht->lenMinIndex[len-1];
+        int end = start + n;
+        for(int i=start; i < end; i++) {
+            if(ht->codes[i] == code) {
+                *out = ht->table[code];
+                //printf("code %x of len %d gives val %d\n", code, len, *out);
+                return true;
+            }
+        }
 
-        auto x = ht->table.find(code);
-        if(x == ht->table.end()) return false;
-        *out = x->second;
-        return true;
+        return false;
     }
 
 };
@@ -145,26 +159,44 @@ public:
     }
 
     int getBits(int n) {
-        int b = 0;
+        if(n < 1) return 0;
+
+        int b = 0;;
         for(int i=0; i < n; i++) {
             if(bitsLeft == 0) {
+                if(file.eof()) {
+                    printf("getBits hit end of file\n");
+                    return -1;
+                }
+
                 if(lastRead == 0xFF) {
                     file.read((char*) &bitBuffer, 1);
+                    //printf("{%x}", (int)bitBuffer);
 
-                    if(bitBuffer == 0) printf("found stuffing\n");
-                    else printf("found marker in getBits()\n");
+                    if(bitBuffer == 0) {
+                        printf("found stuffing\n");
+                    }
+                    else {
+                        printf("found marker in getBits()\n");
+                        if(resolveHex(bitBuffer) == EOI) {
+                            printf("IT WAS EOI!!!\n");
+                        }
+                        exit(0);
+                    }
                 }
 
                 file.read((char*) &bitBuffer, 1);
                 lastRead = bitBuffer;
                 bitsLeft = 8;
+                //printf("(%x)", (int)bitBuffer);
             }
              
             b = b << 1;
-            b |= (bitBuffer & (1 << (bitsLeft - 1)) == 1); 
+            b |= (bitBuffer & (1 << (bitsLeft - 1))) != 0; 
             bitsLeft--;
         }
-
+        //printf("[%x]", (int)b);
+        
         return b;
     }
 
@@ -181,90 +213,111 @@ public:
         return lastRead;
     }
 
+    marker resolveHex(byte hex) {
+        switch(hex) {
+            case 0xC0: return SOF;
+            case 0xC1: return SOF;
+            case 0xC2: return SOF;
+            case 0xC3: return SOF;
+            case 0xC4: return DHT;
+            case 0xC5: return SOF;
+            case 0xC6: return SOF;
+            case 0xC7: return SOF;
+            case 0xC8: return JPG;
+            case 0xC9: return SOF;
+            case 0xCA: return SOF;
+            case 0xCB: return SOF;
+            case 0xCC: return DAC;
+            case 0xCD: return SOF;
+            case 0xCE: return SOF;
+            case 0xCF: return SOF;
+            case 0xD0: return RST;
+            case 0xD2: return RST;
+            case 0xD3: return RST;
+            case 0xD4: return RST;
+            case 0xD5: return RST;
+            case 0xD6: return RST;
+            case 0xD7: return RST;
+            case 0xD8: return SOI;
+            case 0xD9: return EOI;
+            case 0xDA: return SOS;
+            case 0xDB: return DQT;
+            case 0xDC: return DNL;
+            case 0xDD: return DRI;
+            case 0xDE: return DHP;
+            case 0xDF: return EXP;
+            case 0xE0: return APP;
+            case 0xE1: return APP;
+            case 0xE2: return APP;
+            case 0xE3: return APP;
+            case 0xE4: return APP;
+            case 0xE5: return APP;
+            case 0xE6: return APP;
+            case 0xE7: return APP;
+            case 0xE8: return APP;
+            case 0xE9: return APP;
+            case 0xEA: return APP;
+            case 0xEB: return APP;
+            case 0xEC: return APP;
+            case 0xED: return APP;
+            case 0xEE: return APP;
+            case 0xEF: return APP;
+            case 0xF0: return JPG;
+            case 0xF1: return JPG;
+            case 0xF2: return JPG;
+            case 0xF3: return JPG;
+            case 0xF4: return JPG;
+            case 0xF5: return JPG;
+            case 0xF6: return JPG;
+            case 0xF7: return JPG;
+            case 0xF8: return JPG;
+            case 0xF9: return JPG;
+            case 0xFA: return JPG;
+            case 0xFB: return JPG;
+            case 0xFC: return JPG;
+            case 0xFD: return JPG;
+            case 0xFE: return COM;
+            default:
+                std::cout << "some random FF?\n";
+        }
+        return MARKER_ERROR;
+    }
+
     marker nextMarker() {
         byte buffer = 0x00;
         while (!file.eof()) {
-            while (buffer != 0xFF) file.read((char*)&buffer, 1);
+            if(bitsLeft == 8) {
+                bitsLeft = 0;
+                buffer = bitBuffer;
+            }
+            else {
+                while (buffer != 0xFF) {
+                    file.read((char*)&buffer, 1);
+                    printf("{%x}", buffer);
+                }
 
-            file.read((char*)&buffer, 1);
-            lastRead = buffer;
+                file.read((char*)&buffer, 1);
+                lastRead = buffer;
+            }
+
             switch(buffer) {
                 case 0x00:
+                    printf("this padding should be in the encoding\n");
                     // just padding
                     break;
-                case 0xC0: return SOF;
-                case 0xC1: return SOF;
-                case 0xC2: return SOF;
-                case 0xC3: return SOF;
-                case 0xC4: return DHT;
-                case 0xC5: return SOF;
-                case 0xC6: return SOF;
-                case 0xC7: return SOF;
-                case 0xC8: return JPG;
-                case 0xC9: return SOF;
-                case 0xCA: return SOF;
-                case 0xCB: return SOF;
-                case 0xCC: return DAC;
-                case 0xCD: return SOF;
-                case 0xCE: return SOF;
-                case 0xCF: return SOF;
-                case 0xD0: return RST;
-                case 0xD2: return RST;
-                case 0xD3: return RST;
-                case 0xD4: return RST;
-                case 0xD5: return RST;
-                case 0xD6: return RST;
-                case 0xD7: return RST;
-                case 0xD8: return SOI;
-                case 0xD9: return EOI;
-                case 0xDA: return SOS;
-                case 0xDB: return DQT;
-                case 0xDC: return DNL;
-                case 0xDD: return DRI;
-                case 0xDE: return DHP;
-                case 0xDF: return EXP;
-                case 0xE0: return APP;
-                case 0xE1: return APP;
-                case 0xE2: return APP;
-                case 0xE3: return APP;
-                case 0xE4: return APP;
-                case 0xE5: return APP;
-                case 0xE6: return APP;
-                case 0xE7: return APP;
-                case 0xE8: return APP;
-                case 0xE9: return APP;
-                case 0xEA: return APP;
-                case 0xEB: return APP;
-                case 0xEC: return APP;
-                case 0xED: return APP;
-                case 0xEE: return APP;
-                case 0xEF: return APP;
-                case 0xF0: return JPG;
-                case 0xF1: return JPG;
-                case 0xF2: return JPG;
-                case 0xF3: return JPG;
-                case 0xF4: return JPG;
-                case 0xF5: return JPG;
-                case 0xF6: return JPG;
-                case 0xF7: return JPG;
-                case 0xF8: return JPG;
-                case 0xF9: return JPG;
-                case 0xFA: return JPG;
-                case 0xFB: return JPG;
-                case 0xFC: return JPG;
-                case 0xFD: return JPG;
-                case 0xFE: return COM;
-
                 case 0xFF:
                     std::cout << "double FF padding\n";
                     buffer = 0x00;
                     break;
                 default:
-                    std::cout << "some random FF?\n";
+                    return resolveHex(buffer);
                 
             }
             // no valid marker found, keep going
         }
+
+        printf("end of file without finding EOI\n");
+
         // end of all loops
         return MARKER_ERROR;
     }
@@ -286,16 +339,20 @@ public:
         }
     }
 
-    void getBytes(byte* buffer, int numBytes) {
-        file.read((char*)buffer, numBytes);
-    }
-
     void getBytesMatchEndian(byte* buffer, int numBytes) {
+        if(file.eof()) {
+            printf("getBytesME hit end of file\n");
+            return;
+        }
         file.read((char*)buffer, numBytes); 
         matchEndian(buffer, numBytes);
     }
 
     byte getByte() {
+        if(file.eof()) {
+            printf("getByte hit end of file\n");
+            return 0;
+        }
         byte buf;
         file.read((char*)(&buf), 1);
         return buf;
@@ -316,7 +373,9 @@ public:
 class JPEGDecoder {
 
     int quantTables[4][8][8];
-    int dcPred;
+    int dcPred[4];
+    int maxH, maxV;
+    int decodeNextCalls;
 
     struct FrameComponentData {
         byte Ci;
@@ -359,15 +418,24 @@ class JPEGDecoder {
         header.X = bs.getWord();
         header.Nf = bs.getByte();
 
+        if(header.Y % 8 != 0) header.Y += 8 - (header.Y % 8);
+        if(header.X % 8 != 0) header.X += 8 - (header.X % 8);
+
+
         printf("P: %d Y: %d X: %d Nf: %d\n", header.P, header.Y, header.X, header.Nf);
 
         for(int i=0; i < header.Nf; i++) {
-            auto com = &(header.components[i]);
-            com->Ci = bs.getByte();
+            int ci = bs.getByte() - 1;
+            auto com = &(header.components[ci]);
+            com->Ci = ci;
             
             byte sampling = bs.getByte();
-            com->H = sampling >> 4; 
-            com->V = sampling & 0x0F;
+            byte h = sampling >> 4;
+            byte v = sampling & 0x0F;
+            com->H = h; 
+            com->V = v;
+            if(h > maxH) maxH = h;
+            if(v > maxV) maxV = v;
 
             com->Tq = bs.getByte();
             
@@ -455,10 +523,12 @@ class JPEGDecoder {
             totalCodes += numCodes;
         }
 
+
         while(totalCodes-- > 0) {
             byte b = bs.getByte();
             header.vals.push_back(b);
         }
+        
         
         printf("hft table %d ", header.tableIndex);
         if(header.dcTable) printf("DC\n");
@@ -468,18 +538,28 @@ class JPEGDecoder {
 
     }
 
+    void reset() {
+        for(int i=0; i < 4; i++) {
+            dcPred[i] = 0;
+        }
+        maxH = 0;
+        maxV = 0;
+    }
 
-    void startScan(ByteStream& bs, HuffmanDecoder& huff) {
+
+    void startScan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh) {
         printf("start of scan\n");
         word len = bs.getWord();
+        printf("scanheaderlen: %d\n", len);
 
         ScanHeader header; 
         header.Ns = bs.getByte();
         printf("scan components: %d\n", header.Ns);
 
         for(int i=0; i < header.Ns; i++) {
-            auto com = &(header.components[i]);
-            com->Cs = bs.getByte();
+            byte cs = bs.getByte() - 1;
+            auto com = &(header.components[cs]);
+            com->Cs = cs;
             byte b = bs.getByte();
             com->Td = b >> 4;
             com->Ta = b & 0x0F;
@@ -494,29 +574,70 @@ class JPEGDecoder {
         header.Al = b & 0x0F;
 
 
-        decodeDataUnit(bs, huff, header.components[0].Td);
+        scan(bs, huff, fh, header);
     }
+
+    void scan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh, ScanHeader sh) {
+        int numX[4];
+        int numY[4];
+        int numUnits[4];
+        int unitsPerMCU[4];
+        int fi[4];
+
+        decodeNextCalls = 0;
+
+        for(int i=0; i < sh.Ns; i++) {
+            auto scom = &(sh.components[i]);
+            fi[i] = scom->Cs;
+            auto fhcom = &(fh.components[fi[i]]);
+            numX[i] = ceil((fhcom->H * fh.X) / (float)maxH);
+            numY[i] = ceil((fhcom->V * fh.Y) / (float)maxV);
+
+            numUnits[i] = ceil((numX[i] * numY[i]) / 64.0f);
+            unitsPerMCU[i] = fhcom->H * fhcom->V;
+            printf("component %d numX: %d numY: %d numUnits: %d unitsPerMCU: %d\n", fi[i], numX[i], numY[i], numUnits[i], unitsPerMCU[i]);
+        }
+        int numMCU = ceil(numUnits[0] / (float)unitsPerMCU[0]);
+        printf("numMCU: %d\n", numMCU);
+
+        int u = 0;
+        while(u < numMCU){
+            printf("M%d \n", u);
+
+            for(int i=0; i < sh.Ns; i++) {
+                printf("COMPONENT %d\n", i);
+                for(int j=0; j < unitsPerMCU[i]; j++) {
+                   decodeDataUnit(bs, huff, sh.components[i].Td, sh.components[i].Ta, i);
+                }
+            }
+
+            u++;
+        }
+
+
+    }
+
 
     byte decodeNext(ByteStream& bs, HuffmanDecoder& huff, int table, bool dc) {
         int code = 0;
-        int bits = 0;
         byte value = 0;
-        while(bits < 16) {
+
+        for(int len=1; len <= 16; len++)
+        {
             code = code << 1;
             code |= bs.getBits(1);
-            if(huff.lookup(table, dc, code, bits + 1, &value)) {
+            if(huff.lookup(table, dc, code, len, &value)) {
+                decodeNextCalls++;
                 return value;
             }
 
-            bits++;
         }
-
-        printf("Failed to decode val\n");
+        
+        printf("Failed to decode val: %x\n", code);
         return 0;
     }
 
     int getAppendedValue(ByteStream& bs, int bitsNeeded) {
-
         int val = bs.getBits(bitsNeeded);
         if((val & (1 << (bitsNeeded - 1))) == 0) {
             // negative num
@@ -526,12 +647,13 @@ class JPEGDecoder {
         return val;
     }
 
-    int decodeDC(ByteStream& bs, HuffmanDecoder& huff, int table) {
+    int decodeDC(ByteStream& bs, HuffmanDecoder& huff, int table, int comp) {
         byte bitsNeeded = decodeNext(bs, huff, table, true);
-        int diff = getAppendedValue(bs, bitsNeeded);
-        int output = dcPred + diff;
+        int diff = 0;
+        if(bitsNeeded > 0) diff = getAppendedValue(bs, bitsNeeded);
+        int output = dcPred[comp] + diff;
 
-        dcPred = output;
+        dcPred[comp] = output;
         return output;
     }
 
@@ -541,57 +663,62 @@ class JPEGDecoder {
         vector<int> output;
         bool endOfBlock = false;
 
-        while(c < 64) {
-            if(endOfBlock) {
-                output.push_back(0);
-                c++;
-                continue;
-            }
+        for(int i=0; i < 63; i++) output.push_back(0);
 
+        for(byte i=0; i < 63; i++) {
+            //printf("index: %d\n", i);
             byte run = decodeNext(bs, huff, table, false);
-
-            if(run == 0) {
-                printf("ENDOFBLOCK\n");
-                endOfBlock = true;
-                continue;
-            }
 
             byte numZeros = run >> 4;
             byte bitsNeeded = run & 0x0F;
+            //printf("run %d %d\n", numZeros, bitsNeeded);
 
-            
-            for(byte i=0; i < numZeros; i++) {
-                output.push_back(0);
-                c++;
+            if(bitsNeeded == 0) {
+                if(numZeros == 0) {
+                    //printf("ENDOFBLOCK\n");
+                    break;
+                }
+                else if(numZeros != 15) {
+                    printf("this should not appear in the run. ever.\n");
+                    exit(0);
+                }
+                else if(i + 16 >= 63) {
+                    printf("ALSO NOW TOO MANY ZEROS BAD BAD\n");
+                    exit(0);
+                }
+
+                i += 15;
+                continue;
             }
+            
+            if(i + numZeros > 62) {
+                printf("TOO MANY ZEROS THIS IS BAD\n");
+                exit(0);
+            }
+            i += numZeros;
 
             int val = getAppendedValue(bs, bitsNeeded);
-            output.push_back(val); 
-            c++;
+            output[i] = val;
         }
 
         return output;
     }
 
-    vector<int> decodeDataUnit(ByteStream& bs, HuffmanDecoder& huff, int huffTable) {
-        int dc = decodeDC(bs, huff, huffTable);
-        vector<int> ac = decodeAC(bs, huff, huffTable);
-        printf("printing data unit\n");
-        printf("%d ", dc);
-        for(int i=0; i < 63; i++) {
-            printf("%d ", ac[i]);
-        }
-        printf("\n");
+    vector<int> decodeDataUnit(ByteStream& bs, HuffmanDecoder& huff, int dcTable, int acTable, int i) {
+        int dc = decodeDC(bs, huff, dcTable, i);
+        vector<int> ac = decodeAC(bs, huff, acTable);
+        decodeNextCalls = 0;
+
 
         return ac;
     }
 
     public:
     void processFile(const char* filename) {
+        reset();
 
         ByteStream bs = ByteStream(filename, 0xFF, true);
         HuffmanDecoder huff = HuffmanDecoder();
-        dcPred = 0;
 
         marker markerBuf;
         markerBuf = bs.nextMarker();
@@ -603,8 +730,6 @@ class JPEGDecoder {
         // go until start of frame is found
         markerBuf = bs.nextMarker();
         while(markerBuf != SOF && markerBuf != EOI) {
-
-            // need to handle optional xFF fill bytes
 
             switch(markerBuf) {
                 case APP:
@@ -662,8 +787,12 @@ class JPEGDecoder {
                     break;
 
                 case SOS:
-                    startScan(bs, huff);
+                    startScan(bs, huff, fh);
                     break;
+
+                case MARKER_ERROR:
+                    printf("VERY BAD MARKER ERROR\n");
+                    return; 
 
                 default:
                     printf("unsupported marker in frame\n");
