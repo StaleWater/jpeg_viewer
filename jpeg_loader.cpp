@@ -1,6 +1,6 @@
+#include <stdio.h>
 #include <iostream>
 #include <cmath>
-#include <stdio.h>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -10,6 +10,82 @@ using std::vector;
 using std::unordered_map;
 using byte = unsigned char;
 using word = unsigned short;
+
+class Image {
+    int*** img;
+    int rows, cols;
+
+    public:
+
+    Image(int*** im, int r, int c) {
+        img = NULL;
+        copyFrom(im, r, c);
+    }
+
+    ~Image() {
+        deleteImg();
+    }
+
+    int getRows() {
+        return rows;
+    }
+
+    int getCols() {
+        return cols;
+    }
+
+    int sample(int c, int y, int x) {
+        return img[c][y][x];
+    }
+
+    void copyFrom(int*** im, int r, int c) {
+        rows = r; cols = c;
+        deleteImg();
+        allocImg();
+
+        for(int i=0; i < 3; i++) {
+            for(int j=0; j < r; j++) {
+                for(int k=0; k < c; k++) {
+                    img[i][j][k] = im[i][j][k];
+                }
+            } 
+        }
+    }
+
+    void print() {
+        for(int i=0; i < rows; i++) {
+            for(int j=0; j < cols; j++) {
+                printf("(%d, %d, %d) ", img[0][i][j], img[1][i][j], img[2][i][j]);
+            }
+            printf("\n");
+        }
+    }
+
+    private:
+
+    void allocImg() {
+        img = new int**[3];
+        for(int i=0; i < 3; i++) {
+            img[i] = new int*[rows];
+            for(int j=0; j < rows; j++) {
+                img[i][j] = new int[cols];
+            }
+        }
+        
+    }
+
+    void deleteImg() {
+        if(img == NULL) return;
+        for(int i=0; i < 3; i++) {
+            for(int j=0; j < rows; j++) {
+                delete[] img[i][j];
+            }
+            delete[] img[i];
+        }
+        delete[] img;
+    }
+
+};
 
 struct HuffmanTableData {
     bool dcTable;
@@ -66,7 +142,6 @@ class HuffmanDecoder {
                 ht->table[code] = data.vals[valIndex];
                 ht->codes.push_back(code); 
 
-                printf("code %x of length %d has val %d\n", code, len, ht->table[code]);
 
                 valIndex++;
                 numCodes++;
@@ -141,15 +216,15 @@ class ByteStream {
     endian hostEndian, fileEndian;
 
 public:
-    ByteStream(const char* filename) {
+    ByteStream(std::string filename) {
         ByteStream(filename, 0xFF, false);
     }
 
-    ByteStream(const char* filename, byte markerPrefix) {
+    ByteStream(std::string filename, byte markerPrefix) {
         ByteStream(filename, markerPrefix, false);
     } 
 
-    ByteStream(const char* filename, byte markerPrefix, bool bigEndian) {
+    ByteStream(std::string filename, byte markerPrefix, bool bigEndian) {
         file.open(filename, std::ios::binary | std::ios::in);
         prefix = markerPrefix;
         hostEndian = endianCheck();
@@ -174,7 +249,7 @@ public:
                     //printf("{%x}", (int)bitBuffer);
 
                     if(bitBuffer == 0) {
-                        printf("found stuffing\n");
+                        //printf("found stuffing\n");
                     }
                     else {
                         printf("found marker in getBits()\n");
@@ -375,7 +450,6 @@ class JPEGDecoder {
     int quantTables[4][8][8];
     int dcPred[4];
     int maxH, maxV;
-    int decodeNextCalls;
 
     struct FrameComponentData {
         byte Ci;
@@ -386,10 +460,12 @@ class JPEGDecoder {
 
     struct FrameHeader {
         byte P;
-        word Y;
-        word X;
+        word Y, X;
+        word oldY, oldX;
         byte Nf; 
         FrameComponentData components[4];
+        int mcuX;
+        int mcuY;
     };
 
     struct ScanComponentData {
@@ -418,6 +494,10 @@ class JPEGDecoder {
         header.X = bs.getWord();
         header.Nf = bs.getByte();
 
+        printf("original Y: %d X: %d\n", header.Y, header.X);
+        header.oldX = header.X;
+        header.oldY = header.Y;
+
         if(header.Y % 8 != 0) header.Y += 8 - (header.Y % 8);
         if(header.X % 8 != 0) header.X += 8 - (header.X % 8);
 
@@ -442,58 +522,87 @@ class JPEGDecoder {
             printf("component %d H: %d V: %d Tq: %d\n", com->Ci, com->H, com->V, com->Tq);
         }
 
+        int unitsX = header.X / 8;
+        if(unitsX % maxH != 0) {
+            int unitsNeeded = maxH - (unitsX % maxH);
+            header.X += unitsNeeded * 8;
+            unitsX = header.X / 8;
+        }
+        int unitsY = header.Y / 8;
+        if(unitsY % maxV != 0) {
+            int unitsNeeded = maxV - (unitsY % maxV);
+            header.Y += unitsNeeded * 8;
+            unitsY = header.Y / 8;
+        }
+
+        
+        printf("newest Y: %d X: %d\n", header.Y, header.X);
+
+        header.mcuX = (unitsX / maxH);
+        header.mcuY = (unitsY / maxV);
+
+        printf("unitsX: %d unitsY: %d\n", unitsX, unitsY);
+        printf("mcuX: %d mcuY %d\n", header.mcuX, header.mcuY);
+
         return header;
     }
 
     void buildQuantTables(ByteStream& bs) {
         word len = bs.getWord();
+        len -= 2;
+        if(len % 65 != 0) printf("len calc did not go as intended\n");
+        int numTables = len / 65;
 
-        byte b = bs.getByte();
-        byte Pq = b >> 4;
-        byte Tq = b & 0x0F;
+        for(int t=0; t < numTables; t++) {
 
-        if(Pq != 0) {
-            printf("Precision of 16 bits is not supported! QT\n");
-            return;
-        }
+            byte b = bs.getByte();
+            byte Pq = b >> 4;
+            byte Tq = b & 0x0F;
 
-        printf("buliding quant table %d\n", Tq);
+            if(Pq != 0) {
+                printf("Precision of 16 bits is not supported! QT\n");
+                return;
+            }
 
-        int (*table)[8] = quantTables[Tq];
+            printf("buliding quant table %d\n", Tq);
 
-        int i = 0;
-        int j = 0;
-        bool secondHalf = false;
-        bool rowPos = false;
+            int (*table)[8] = quantTables[Tq];
 
-        while(i < 8 && j < 8) {
-            if(!secondHalf && (i == 7 || j == 7)) secondHalf = true;
+            int i = 0;
+            int j = 0;
+            bool secondHalf = false;
+            bool rowPos = false;
 
-            while(i >= 0 && i < 8 && j >= 0 && j < 8) {
-                table[i][j] = (int) bs.getByte(); 
-                
-                if(rowPos) {
-                    i++; j--;
+            while(i < 8 && j < 8) {
+                if(!secondHalf && (i == 7 || j == 7)) secondHalf = true;
+
+                while(i >= 0 && i < 8 && j >= 0 && j < 8) {
+                    table[i][j] = (int) bs.getByte(); 
+                    
+                    if(rowPos) {
+                        i++; j--;
+                    }
+                    else {
+                        i--; j++;
+                    }
+                }
+
+                if(rowPos && secondHalf) {
+                    i--; j += 2;
+                }
+                else if(rowPos) {
+                    j++;
+                }
+                else if(secondHalf) {
+                    i += 2; j--;
                 }
                 else {
-                    i--; j++;
+                    i++;
                 }
+
+                rowPos = !rowPos;
             }
 
-            if(rowPos && secondHalf) {
-                i--; j += 2;
-            }
-            else if(rowPos) {
-                j++;
-            }
-            else if(secondHalf) {
-                i += 2; j--;
-            }
-            else {
-                i++;
-            }
-
-            rowPos = !rowPos;
         }
 
     }
@@ -547,7 +656,7 @@ class JPEGDecoder {
     }
 
 
-    void startScan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh) {
+    void startScan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh, int*** img) {
         printf("start of scan\n");
         word len = bs.getWord();
         printf("scanheaderlen: %d\n", len);
@@ -574,46 +683,122 @@ class JPEGDecoder {
         header.Al = b & 0x0F;
 
 
-        scan(bs, huff, fh, header);
+        scan(bs, huff, fh, header, img);
     }
 
-    void scan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh, ScanHeader sh) {
-        int numX[4];
-        int numY[4];
-        int numUnits[4];
-        int unitsPerMCU[4];
+    void scan(ByteStream& bs, HuffmanDecoder& huff, FrameHeader fh, ScanHeader sh, int*** img) {
         int fi[4];
-
-        decodeNextCalls = 0;
 
         for(int i=0; i < sh.Ns; i++) {
             auto scom = &(sh.components[i]);
             fi[i] = scom->Cs;
-            auto fhcom = &(fh.components[fi[i]]);
-            numX[i] = ceil((fhcom->H * fh.X) / (float)maxH);
-            numY[i] = ceil((fhcom->V * fh.Y) / (float)maxV);
-
-            numUnits[i] = ceil((numX[i] * numY[i]) / 64.0f);
-            unitsPerMCU[i] = fhcom->H * fhcom->V;
-            printf("component %d numX: %d numY: %d numUnits: %d unitsPerMCU: %d\n", fi[i], numX[i], numY[i], numUnits[i], unitsPerMCU[i]);
         }
-        int numMCU = ceil(numUnits[0] / (float)unitsPerMCU[0]);
-        printf("numMCU: %d\n", numMCU);
 
-        int u = 0;
-        while(u < numMCU){
-            printf("M%d \n", u);
+        int unit[8][8];
+        for(int y=0; y < fh.mcuY; y++) {
+            for(int x=0; x < fh.mcuX; x++) {
+            //printf("M %d %d \n", y, x);
 
-            for(int i=0; i < sh.Ns; i++) {
-                printf("COMPONENT %d\n", i);
-                for(int j=0; j < unitsPerMCU[i]; j++) {
-                   decodeDataUnit(bs, huff, sh.components[i].Td, sh.components[i].Ta, i);
+                for(int c=0; c < sh.Ns; c++) { 
+                    auto fhcom = &(fh.components[fi[c]]);
+                    int** imgcom = img[c];
+                    int dupRateX = maxH / fhcom->H;
+                    int dupRateY = maxV / fhcom->V;
+                    //printf("COMPONENT %d dupRate: %d %d\n", c, dupRateX, dupRateY);
+
+                    for(int v=0; v < fhcom->V; v++) {
+                        for(int h=0; h < fhcom->H; h++) {
+                            decodeDataUnit(bs, huff, sh.components[c].Td, sh.components[c].Ta, c, unit);
+                            quantizeDataUnit(fhcom->Tq, unit);
+                            IDCT(unit);
+                            levelShift(unit);
+
+                            int imgX = x * maxH * 8 + h * dupRateX * 8;
+                            int imgY = y * maxV * 8 + v * dupRateY * 8;
+                            if(imgX < 0 || imgY < 0 || imgX >= fh.X || imgY >= fh.Y) {
+                                printf("OUT OF BOUNDS PLACEMENT\n");
+                                exit(0);
+                            }
+
+                            placeUnit(unit, imgcom, imgX, imgY, dupRateX, dupRateY);
+                        }
+                    }
                 }
             }
-
-            u++;
         }
 
+    }
+
+    void placeUnit(int (*mat)[8], int** img, int x, int y, int dupRateX, int dupRateY) {
+        for(int i=0; i < 8; i++) {
+            for(int j=0; j < 8; j++) {
+                for(int dy=0; dy < dupRateY; dy++) {
+                    for(int dx=0; dx < dupRateX; dx++) {
+                        int yi = y + i * dupRateY + dy;
+                        int xi = x + j * dupRateX + dx;
+
+                        img[yi][xi] = mat[i][j];
+                    }
+                }
+            }
+        }
+    }
+
+    void printUnit(int (*mat)[8]) {
+        for(int i=0; i < 8; i++) {
+            for(int j=0; j < 8; j++) {
+                printf("%d ", mat[i][j]);
+            }
+        }
+        printf("\n");
+    }
+
+    void levelShift(int (*mat)[8]) {
+        for(int i=0; i < 8; i++) {
+            for(int j=0; j < 8; j++) {
+                mat[i][j] += 128;
+            }
+        }
+    }
+
+    void IDCT(int (*mat)[8]) {
+        int temp[8][8];
+        float C0 = 1.0f / sqrt(2.0f);
+        float C1 = 1.0f;
+        for(int y=0; y < 8; y++) {
+            for(int x=0; x < 8; x++) {
+                float sum = 0;
+
+                for(int u=0; u < 8; u++) {
+                    for(int v=0; v < 8; v++) {
+                        float S = (float)mat[v][u];
+                        float Cu = u == 0 ? C0 : C1;
+                        float Cv = v == 0 ? C0 : C1;
+                        float added = Cu * Cv * S * cos((2*x+1) * u * M_PI * 0.0625f) * cos((2*y+1) * v * M_PI * 0.0625f);
+                        sum += added;
+                    }
+                }
+                sum *= 0.25f;
+
+                temp[y][x] = (int)sum;
+            }
+        }
+
+        for(int i=0; i < 8; i++) {
+            for(int j=0; j < 8; j++) {
+                mat[i][j] = temp[i][j];
+            }
+        }
+    }
+
+    void quantizeDataUnit(int qtTable, int (*mat)[8]) {
+        int (*qt)[8] = quantTables[qtTable];
+
+        for(int i=0; i < 8; i++) {
+            for(int j=0; j < 8; j++) {
+                mat[i][j] *= qt[i][j];
+            }
+        }
 
     }
 
@@ -627,7 +812,6 @@ class JPEGDecoder {
             code = code << 1;
             code |= bs.getBits(1);
             if(huff.lookup(table, dc, code, len, &value)) {
-                decodeNextCalls++;
                 return value;
             }
 
@@ -704,17 +888,87 @@ class JPEGDecoder {
         return output;
     }
 
-    vector<int> decodeDataUnit(ByteStream& bs, HuffmanDecoder& huff, int dcTable, int acTable, int i) {
-        int dc = decodeDC(bs, huff, dcTable, i);
+    void decodeDataUnit(ByteStream& bs, HuffmanDecoder& huff, int dcTable, int acTable, int index, int (*mat)[8]) {
+        int dc = decodeDC(bs, huff, dcTable, index);
         vector<int> ac = decodeAC(bs, huff, acTable);
-        decodeNextCalls = 0;
 
+        int aci = 0;
+        int i = 0;
+        int j = 0;
+        bool secondHalf = false;
+        bool rowPos = false;
 
-        return ac;
+        // zigzag placement order
+        while(i < 8 && j < 8) {
+            if(!secondHalf && (i == 7 || j == 7)) secondHalf = true;
+
+            while(i >= 0 && i < 8 && j >= 0 && j < 8) {
+                if(i == 0 && j == 0) mat[i][j] = dc;
+                else mat[i][j] = ac[aci++];
+
+                if(rowPos) {
+                    i++; j--;
+                }
+                else {
+                    i--; j++;
+                }
+            }
+
+            if(rowPos && secondHalf) {
+                i--; j += 2;
+            }
+            else if(rowPos) {
+                j++;
+            }
+            else if(secondHalf) {
+                i += 2; j--;
+            }
+            else {
+                i++;
+            }
+
+            rowPos = !rowPos;
+        }
+    
+    }
+
+    void YCbCrToRGB(int y, int cb, int cr, int& r, int& g, int& b) {
+        double Y = (double) y;
+        double Cb = (double) cb;
+        double Cr = (double) cr;
+
+        r = (int) (Y + 1.40200 * (Cr - 0x80));
+        g = (int) (Y - 0.34414 * (Cb - 0x80) - 0.71414 * (Cr - 0x80));
+        b = (int) (Y + 1.77200 * (Cb - 0x80));
+
+        r = std::max(0, std::min(255, r));
+        g = std::max(0, std::min(255, g));
+        b = std::max(0, std::min(255, b));
+    }
+
+    void ImgYCbCrToRGB(int*** img, int rows, int cols) {
+        int r, g, b;
+        for(int i=0; i < rows; i++) {
+            for(int j=0; j < cols; j++) {
+                YCbCrToRGB(img[0][i][j], img[1][i][j], img[2][i][j], r, g, b);
+                img[0][i][j] = r;
+                img[1][i][j] = g;
+                img[2][i][j] = b;
+            }
+        }
+    }
+
+    void printImg(int*** img, int rows, int cols) {
+        for(int i=0; i < rows; i++) {
+            for(int j=0; j < cols; j++) {
+                printf("(%d, %d, %d) ", img[0][i][j], img[1][i][j], img[2][i][j]);
+            }
+            printf("\n");
+        }
     }
 
     public:
-    void processFile(const char* filename) {
+    Image processFile(std::string filename) {
         reset();
 
         ByteStream bs = ByteStream(filename, 0xFF, true);
@@ -754,7 +1008,7 @@ class JPEGDecoder {
 
                 case MARKER_ERROR:
                     printf("Something went very bad. Oh god.\n");
-                    return;
+                    exit(0);
 
                 default:
                     printf("unsupported marker ");
@@ -769,10 +1023,19 @@ class JPEGDecoder {
         byte sofType = bs.lastReadByte() - 0xC0;
         if(sofType != 0) {
             printf("SOF%d is not supported yet!\n", sofType);
-            return;
+            exit(0);
         }
 
         FrameHeader fh = baselineFrame(bs);
+
+        int*** img = new int**[fh.Nf];
+        for(int i=0; i < fh.Nf; i++) {
+            img[i] = new int*[fh.Y];
+            for(int j=0; j < fh.Y; j++) {
+                img[i][j] = new int[fh.X];
+            }
+        }
+
 
         // inside frame
         markerBuf = bs.nextMarker();
@@ -787,12 +1050,12 @@ class JPEGDecoder {
                     break;
 
                 case SOS:
-                    startScan(bs, huff, fh);
+                    startScan(bs, huff, fh, img);
                     break;
 
                 case MARKER_ERROR:
                     printf("VERY BAD MARKER ERROR\n");
-                    return; 
+                    exit(0);
 
                 default:
                     printf("unsupported marker in frame\n");
@@ -802,19 +1065,21 @@ class JPEGDecoder {
         }
 
         printf("reached end of image!\n");
-        
+
+        ImgYCbCrToRGB(img, fh.Y, fh.X);
+
+        Image output = Image(img, fh.oldY, fh.oldX);
+
+        for(int i=0; i < fh.Nf; i++) {
+            for(int j=0; j < fh.Y; j++) {
+                delete[] img[i][j];
+            }
+            delete[] img[i];
+        }
+        delete[] img;
+
+        return output;
     }
 
 };
 
-
-
-int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        printf("Usage: %s filename\n", argv[0]);
-        return 0;
-    }
-    auto decoder = JPEGDecoder();
-    decoder.processFile(argv[1]);
-    return 0;
-}
