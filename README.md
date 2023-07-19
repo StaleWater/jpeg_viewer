@@ -12,5 +12,5 @@ Some notes about it:
 - Only huffman entropy encoding is supported, arithmetic encoding is NOT yet supported.
 - APP markers are currently not being processed, as they are not necessary for the baseline functionality.
 
-To test it's functionality, this JPEG decoder can be exported into a Qt project and used to convert a JPEG file into a multi-component bitmap.
+To test its functionality, this JPEG decoder can be exported into a Qt project and used to convert a JPEG file into a multi-component bitmap.
 This bitmap can then loaded into a QImage and displayed in a window.
